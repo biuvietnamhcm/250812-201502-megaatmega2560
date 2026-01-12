@@ -9,9 +9,9 @@
 #include <StreamUtils.h>
 
 #define SD_CS 11
-#define TFT_CS 10
-#define TFT_RST 8
-#define TFT_DC 9
+#define TFT_CS 7
+#define TFT_RST 6 
+#define TFT_DC 5
 #define MOTOR_1 22
 #define MOTOR_2 24
 #define MOTOR_3 26
@@ -168,7 +168,7 @@ void dispenseFromTube(const char* tubeName) {
     int sensorState = digitalRead(Sensor_PIN);
 
     
-    delayMicroseconds(200);
+    delayMicroseconds(50);
     if (sensorState == LOW && digitalRead(Sensor_PIN) == LOW) {
       Serial.println(F("Beam blocked → stopping motor"));
       dispensingComplete = true;
