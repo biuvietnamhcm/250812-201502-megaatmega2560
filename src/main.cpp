@@ -47,6 +47,19 @@ unsigned long lastMenuUpdate = 0;
 bool showNotification = false;
 bool motorStates[4] = {false, false, false, false};
 
+bool tftNeedsUpdate = true;            // Flag to trigger TFT update
+uint8_t lastDisplayedMinute = 255;     // Track last displayed minute (255 = uninitialized)
+bool lastNotificationState = false;    // Track notification state changes
+bool lastFilestat = false;             // Track filestat changes
+int lastGroupedCount = 0;              // Track schedule changes
+unsigned long lastCountdownUpdate = 0; // Track countdown display updates
+int lastCountdownValue = -1;           // Track last displayed countdown
+
+void requestTFTUpdate()
+{
+  tftNeedsUpdate = true;
+}
+
 struct TubeMapping
 {
   char tubeName[8];
@@ -256,6 +269,7 @@ void handleDispensing()
 
   Serial.println(F("Dispensing sequence complete"));
   showNotification = false;
+  requestTFTUpdate();
 }
 
 inline void deselectAll()
@@ -269,7 +283,7 @@ inline void deselectAll()
 inline void selectTFT()
 {
   deselectAll();
-  delay(1); // Added 1ms delay for stability
+  delay(1);                            // Added 1ms delay for stability
   SPI.setClockDivider(SPI_CLOCK_DIV2); // 8 MHz on Mega
   digitalWrite(TFT_CS, LOW);
   delayMicroseconds(50); // Increased settle time
@@ -278,7 +292,7 @@ inline void selectTFT()
 inline void selectSD()
 {
   deselectAll();
-  delay(1); // Added 1ms delay for stability
+  delay(1);                            // Added 1ms delay for stability
   SPI.setClockDivider(SPI_CLOCK_DIV4); // 4 MHz (safe init)
   digitalWrite(SD_CS, LOW);
   delayMicroseconds(50); // Increased settle time
@@ -832,64 +846,75 @@ void drawNotification()
     notifHeight = 100;
   }
 
-  tft.fillRect(10, 80, 300, notifHeight, ST77XX_RED);
-  tft.drawRect(9, 79, 302, notifHeight + 2, ST77XX_WHITE);
+  int currentCountdown = 300 - (millis() - notificationStartTime) / 1000;
 
-  bool blink = (millis() / 500) % 2;
-  uint16_t textColor = blink ? ST77XX_WHITE : ST77XX_YELLOW;
+  bool needFullRedraw = (lastCountdownValue == -1) ||
+                        (millis() - lastCountdownUpdate > 10000); // Update every 10 seconds
 
-  tft.setTextSize(1);
-  tft.setTextColor(textColor);
-  tft.setCursor(15, 90);
-  tft.print(F("MEDICATION ALERT!"));
-
-  tft.setTextSize(1);
-  int lineY = 105;
-  int charsPerLine = 35;
-
-  int msgLen = strlen(notificationMessage);
-  int pos = 0;
-
-  while (pos < msgLen && lineY < 80 + notifHeight - 20)
+  if (needFullRedraw)
   {
-    int lineEnd = pos + charsPerLine;
-    if (lineEnd > msgLen)
-      lineEnd = msgLen;
+    tft.fillRect(10, 80, 300, notifHeight, ST77XX_RED);
+    tft.drawRect(9, 79, 302, notifHeight + 2, ST77XX_WHITE);
 
-    if (lineEnd < msgLen)
+    tft.setTextSize(1);
+    tft.setTextColor(ST77XX_YELLOW);
+    tft.setCursor(15, 90);
+    tft.print(F("!! MEDICATION ALERT !!"));
+
+    tft.setTextSize(1);
+    tft.setTextColor(ST77XX_WHITE);
+    int lineY = 105;
+    int charsPerLine = 35;
+
+    int msgLen = strlen(notificationMessage);
+    int pos = 0;
+
+    while (pos < msgLen && lineY < 80 + notifHeight - 20)
     {
-      while (lineEnd > pos && notificationMessage[lineEnd] != ' ')
+      int lineEnd = pos + charsPerLine;
+      if (lineEnd > msgLen)
+        lineEnd = msgLen;
+
+      if (lineEnd < msgLen)
       {
-        lineEnd--;
+        while (lineEnd > pos && notificationMessage[lineEnd] != ' ')
+        {
+          lineEnd--;
+        }
+        if (lineEnd == pos)
+          lineEnd = pos + charsPerLine;
       }
-      if (lineEnd == pos)
-        lineEnd = pos + charsPerLine;
+
+      tft.setCursor(15, lineY);
+      for (int i = pos; i < lineEnd; i++)
+      {
+        tft.print(notificationMessage[i]);
+      }
+
+      pos = lineEnd;
+      if (pos < msgLen && notificationMessage[pos] == ' ')
+        pos++;
+      lineY += 12;
     }
 
-    tft.setCursor(15, lineY);
-    for (int i = pos; i < lineEnd; i++)
-    {
-      tft.print(notificationMessage[i]);
-    }
+    tft.setTextSize(1);
+    tft.setCursor(15, 80 + notifHeight - 25);
+    tft.print(F("Press DROP button to dispense"));
 
-    pos = lineEnd;
-    if (pos < msgLen && notificationMessage[pos] == ' ')
-      pos++;
-    lineY += 12;
+    tft.fillRect(15, 80 + notifHeight - 15, 150, 10, ST77XX_RED);
+    tft.setCursor(15, 80 + notifHeight - 15);
+    tft.print(F("Auto-dismiss in "));
+    tft.print(currentCountdown);
+    tft.print(F("s"));
+
+    lastCountdownUpdate = millis();
+    lastCountdownValue = currentCountdown;
   }
-
-  tft.setTextSize(1);
-  tft.setCursor(15, 80 + notifHeight - 25);
-  tft.print(F("Press DROP button to dispense"));
-
-  tft.setCursor(15, 80 + notifHeight - 15);
-  tft.print(F("Auto-dismiss in "));
-  tft.print(300 - (millis() - notificationStartTime) / 1000);
-  tft.print(F("s"));
 
   if (millis() - notificationStartTime > 300000)
   {
     showNotification = false;
+    lastCountdownValue = -1; // Reset for next notification
   }
 }
 
@@ -1068,6 +1093,7 @@ void handleTubeSetupButton()
   {
     waitingForDropButton = false;
   }
+  requestTFTUpdate();
 }
 
 void showMainMenu()
@@ -1091,6 +1117,7 @@ void showMainMenu()
   {
     showNotification = true;
     notificationStartTime = millis();
+    lastCountdownValue = -1; // Reset countdown tracking for fresh draw
   }
 
   if (showNotification)
@@ -1152,9 +1179,6 @@ void showMainMenu()
   tft.print(F(" ("));
   tft.print(scheduleCount);
   tft.print(F(" doses)"));
-
-  tft.setCursor(200, 260);
-  tft.print(F("Auto-refresh: 5s"));
 }
 
 bool checkJsonFile()
@@ -1191,14 +1215,14 @@ bool initSD()
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
   delay(100); // Let lines settle
-  
+
   // Send dummy clocks with all CS high (required by SD spec)
-  SPI.setClockDivider(SPI_CLOCK_DIV64); // Very slow for init: ~250kHz
-  for (int i = 0; i < 10; i++)
+  SPI.setClockDivider(SPI_CLOCK_DIV64); // Very slow for SD init
+  for (int i = 0; i < 20; i++)
   {
     SPI.transfer(0xFF);
   }
-  delay(10);
+  delay(50);
 
   // Now try SD init at slow speed
   SPI.setClockDivider(SPI_CLOCK_DIV4); // 4 MHz for SD
@@ -1211,7 +1235,7 @@ bool initSD()
     // Ensure TFT is deselected
     digitalWrite(TFT_CS, HIGH);
     delay(10);
-    
+
     if (SD.begin(SD_CS, SPI_HALF_SPEED)) // Use SPI_HALF_SPEED for more reliable init
     {
       Serial.println(F("SD initialized successfully."));
@@ -1219,7 +1243,7 @@ bool initSD()
       delay(50);
       return true;
     }
-    
+
     Serial.println(F("SD init failed, retrying..."));
     digitalWrite(SD_CS, HIGH);
     delay(300); // Longer delay between retries
@@ -1237,22 +1261,41 @@ void setup()
 
   pinMode(SD_CS, OUTPUT);
   pinMode(TFT_CS, OUTPUT);
-  pinMode(TFT_RST, OUTPUT); // Also set RST as output
-  pinMode(TFT_DC, OUTPUT);  // Also set DC as output
+  pinMode(TFT_RST, OUTPUT);
+  pinMode(TFT_DC, OUTPUT);
   pinMode(DROP_BTN, INPUT_PULLUP);
 
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
-  digitalWrite(TFT_RST, LOW); // Hold TFT in reset - prevents SPI interference
   digitalWrite(TFT_DC, HIGH);
-  
-  delay(100); // Let everything settle
+
+  delay(100);
 
   SPI.begin();
-  SPI.setClockDivider(SPI_CLOCK_DIV64); // Start very slow
+  SPI.setClockDivider(SPI_CLOCK_DIV4);
   SPI.setDataMode(SPI_MODE0);
   delay(50);
 
+  Serial.println(F("Initializing TFT first..."));
+  digitalWrite(TFT_RST, LOW);
+  delay(50);
+  digitalWrite(TFT_RST, HIGH);
+  delay(150);
+  
+  selectTFT();
+  tft.init(240, 280);
+  tft.setRotation(1);
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(50, 120);
+  tft.println(F("Loading..."));
+  deselectAll();
+  delay(100);
+  Serial.println(F("TFT first init done."));
+
+  // Send dummy clocks with all CS high
+  SPI.setClockDivider(SPI_CLOCK_DIV64); // Slow for SD init
   for (int i = 0; i < 20; i++)
   {
     SPI.transfer(0xFF);
@@ -1263,33 +1306,42 @@ void setup()
   if (!initSD())
   {
     Serial.println(F("Cannot initialize SD card!"));
-    // Release TFT from reset to show error
-    digitalWrite(TFT_RST, HIGH);
-    delay(150);
     selectTFT();
-    tft.init(240, 280);
     tft.fillScreen(ST77XX_RED);
-    tft.setRotation(1);
     tft.setTextColor(ST77XX_WHITE);
     tft.setTextSize(2);
     tft.setCursor(50, 100);
     tft.println(F("SD CARD ERROR!"));
+    deselectAll();
     while (1);
   }
-  
-  // Deselect SD after successful init
+
   digitalWrite(SD_CS, HIGH);
   delay(50);
   Serial.println(F("SD card ready."));
 
-  Serial.println(F("Initializing TFT..."));
-  digitalWrite(TFT_RST, HIGH);
-  delay(150); // TFT needs time after reset release
+  Serial.println(F("Reinitializing TFT..."));
+  SPI.setClockDivider(SPI_CLOCK_DIV4); // Back to fast speed for TFT
   
+  // Full TFT reset sequence
+  digitalWrite(TFT_RST, LOW);
+  delay(50);
+  digitalWrite(TFT_RST, HIGH);
+  delay(150);
+
+  // Flush any garbage on SPI bus
+  for (int i = 0; i < 10; i++)
+  {
+    SPI.transfer(0xFF);
+  }
+  delay(10);
+
   selectTFT();
   tft.init(240, 280);
+  tft.setRotation(1);
   deselectAll();
   delay(50);
+  Serial.println(F("TFT reinitialized."));
 
   // 3) Show intro animation
   selectTFT();
@@ -1328,13 +1380,61 @@ void setup()
   pinMode(MOTOR_4, OUTPUT);
   pinMode(Sensor_PIN, INPUT);
   delay(200);
-  
+
   Serial.println(F("Setup complete!"));
 }
 
 void loop()
 {
   rtctime = rtc.now();
+
+  // Event 1: Minute changed - update header time
+  if (rtctime.minute() != lastDisplayedMinute)
+  {
+    lastDisplayedMinute = rtctime.minute();
+    requestTFTUpdate();
+    Serial.print(F("Time changed to "));
+    Serial.print(rtctime.hour());
+    Serial.print(F(":"));
+    Serial.println(rtctime.minute());
+  }
+
+  // Event 2: Check for medication time (notification trigger)
+  if (checkMedicationTime() && !showNotification)
+  {
+    showNotification = true;
+    notificationStartTime = millis();
+    lastCountdownValue = -1; // Reset countdown tracking for fresh draw
+    requestTFTUpdate();
+    Serial.println(F("Medication time - notification triggered"));
+  }
+
+  // Event 3: Notification state changed
+  if (showNotification != lastNotificationState)
+  {
+    lastNotificationState = showNotification;
+    lastCountdownValue = -1; // Reset on state change
+    requestTFTUpdate();
+  }
+
+  if (showNotification && (millis() - lastCountdownUpdate > 10000))
+  {
+    requestTFTUpdate();
+  }
+
+  // Event 4: Filestat changed
+  if (filestat != lastFilestat)
+  {
+    lastFilestat = filestat;
+    requestTFTUpdate();
+  }
+
+  // Event 5: Schedule count changed
+  if (groupedCount != lastGroupedCount)
+  {
+    lastGroupedCount = groupedCount;
+    requestTFTUpdate();
+  }
 
   if (digitalRead(DROP_BTN) == LOW)
   {
@@ -1343,7 +1443,9 @@ void loop()
     {
       if (setupMode)
       {
+        selectTFT();
         handleTubeSetupButton();
+        deselectAll();
       }
       else if (showNotification)
       {
@@ -1352,9 +1454,6 @@ void loop()
       delay(500);
     }
   }
-
-  static unsigned long lastUpdate = 0;
-  const unsigned long refreshInterval = 2000;
 
   static int byteCounter = 0;
   static char tempBuffer[TEMP_BUFFER_SIZE + 1] = "";
@@ -1454,12 +1553,14 @@ void loop()
             }
           }
           filestat = loaded;
+          requestTFTUpdate();
           delay(2000);
         }
         else
         {
           filestat = false;
           Serial.println(F("Failed to save JSON to SD."));
+          requestTFTUpdate();
         }
 
         int endOffset = (endPos - tempBuffer) + 5;
@@ -1497,7 +1598,6 @@ void loop()
 
     if (byteCounter >= 32)
     {
-
       byteCounter = 0;
     }
   }
@@ -1528,11 +1628,11 @@ void loop()
     }
   }
 
-  if (!receiving && millis() - lastUpdate >= refreshInterval)
+  if (!receiving && tftNeedsUpdate)
   {
     selectTFT();
     showMainMenu();
     deselectAll();
-    lastUpdate = millis();
+    tftNeedsUpdate = false;
   }
 }
